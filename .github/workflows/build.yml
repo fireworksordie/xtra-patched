@@ -1,0 +1,108 @@
+name: Build patched Xtra
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'        # every 6 hours; builds only if upstream or patches changed
+  push:
+    branches: [ main ]
+    paths:
+      - 'patches/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild even if nothing changed'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write                 # needed to create the "latest" release
+
+env:
+  UPSTREAM: crackededed/xtra
+  UPSTREAM_BRANCH: master
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo (patches + workflow)
+        uses: actions/checkout@v7
+
+      # GitHub pauses scheduled workflows after 60 days without repo activity.
+      # An empty commit every ~45 days should keep the schedule alive.
+      - name: Keepalive
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 45 * 86400 )) ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "chore: keepalive"
+            git push
+          fi
+
+      - name: Decide whether a build is needed
+        id: check
+        run: |
+          UP_SHA=$(git ls-remote "https://github.com/$UPSTREAM.git" "refs/heads/$UPSTREAM_BRANCH" | cut -f1)
+          PATCH_HASH=$(cat patches/*.patch 2>/dev/null | sha256sum | cut -c1-12)
+          KEY="upstream=$UP_SHA patches=$PATCH_HASH"
+          LAST=$(gh release view latest -R "${{ github.repository }}" --json body -q .body 2>/dev/null | head -n1 || true)
+          echo "wanted: $KEY"
+          echo "last:   $LAST"
+          if [ "$KEY" = "$LAST" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "sha=$UP_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Clone upstream at that commit
+        if: steps.check.outputs.build == 'true'
+        run: |
+          git clone --filter=blob:none "https://github.com/$UPSTREAM.git" upstream
+          git -C upstream checkout "${{ steps.check.outputs.sha }}"
+
+      - name: Apply patches
+        if: steps.check.outputs.build == 'true'
+        working-directory: upstream
+        run: |
+          shopt -s nullglob
+          for p in ../patches/*.patch; do
+            echo "Applying $p"
+            git apply --3way "$p" || { echo "::error::$p no longer applies to upstream ${{ steps.check.outputs.sha }}"; exit 1; }
+          done
+
+      - name: Setup Java
+        if: steps.check.outputs.build == 'true'
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        if: steps.check.outputs.build == 'true'
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: 'basic'
+
+      - name: Build
+        if: steps.check.outputs.build == 'true'
+        working-directory: upstream
+        run: ./gradlew assembleRelease
+
+      - name: Publish "latest" release
+        if: steps.check.outputs.build == 'true'
+        run: |
+          {
+            echo "${{ steps.check.outputs.key }}"
+            echo
+            echo "Built from https://github.com/$UPSTREAM/commit/${{ steps.check.outputs.sha }}"
+            echo "Patches applied: $(ls patches | tr '\n' ' ')"
+          } > notes.txt
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest --title "Latest" --notes-file notes.txt --latest=true \
+            --target "${{ github.sha }}" upstream/app/build/outputs/apk/release/*.apk

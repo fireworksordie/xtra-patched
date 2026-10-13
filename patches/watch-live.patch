@@ -1,0 +1,41 @@
+diff --git a/app/src/main/java/com/github/andreyasadchy/xtra/ui/main/MainActivity.kt b/app/src/main/java/com/github/andreyasadchy/xtra/ui/main/MainActivity.kt
+index b0a2f69..de8446a 100644
+--- a/app/src/main/java/com/github/andreyasadchy/xtra/ui/main/MainActivity.kt
++++ b/app/src/main/java/com/github/andreyasadchy/xtra/ui/main/MainActivity.kt
+@@ -129,6 +129,7 @@ class MainActivity : AppCompatActivity() {
+     var logoutResultLauncher: ActivityResultLauncher<Intent>? = null
+     private var updateDownloadDialogBinding: DialogUpdateDownloadBinding? = null
+     private var updateDownloadDialog: AlertDialog? = null
++    private var autoWatchLogin: String? = null
+ 
+     //Lifecycle methods
+ 
+@@ -507,7 +508,19 @@ class MainActivity : AppCompatActivity() {
+             repeatOnLifecycle(Lifecycle.State.STARTED) {
+                 viewModel.user.collectLatest { user ->
+                     if (user != null) {
+-                        if (!user.id.isNullOrBlank() || !user.login.isNullOrBlank()) {
++                        val watchLive = autoWatchLogin != null && autoWatchLogin.equals(user.login, true)
++                        autoWatchLogin = null
++                        if (watchLive) {
++                            // Patch: twitch.tv/<channel>?watch=1 opens the stream directly
++                            startStream(
++                                Stream(
++                                    channelId = user.id,
++                                    channelLogin = user.login,
++                                    channelName = user.name,
++                                    channelImageURL = user.profileImageURL,
++                                )
++                            )
++                        } else if (!user.id.isNullOrBlank() || !user.login.isNullOrBlank()) {
+                             (playerFragment as? PlayerFragment)?.minimize()
+                             navController.navigate(
+                                 ChannelPagerFragmentDirections.actionGlobalChannelPagerFragment(
+@@ -794,6 +807,7 @@ class MainActivity : AppCompatActivity() {
+                         else -> {
+                             val login = url.substringAfter("twitch.tv/").takeIf { it.isNotBlank() }?.let { it.substringBefore("?", it.substringBefore("/")) }
+                             if (!login.isNullOrBlank()) {
++                                autoWatchLogin = login.takeIf { intent.data?.getQueryParameter("watch") == "1" }
+                                 viewModel.loadUser(
+                                     login,
+                                     prefs.getString(C.NETWORK_LIBRARY, C.OKHTTP),
