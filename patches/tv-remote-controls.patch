@@ -1,0 +1,169 @@
+diff --git a/app/src/main/java/com/github/andreyasadchy/xtra/ui/main/MainActivity.kt b/app/src/main/java/com/github/andreyasadchy/xtra/ui/main/MainActivity.kt
+index b0a2f69..830df91 100644
+--- a/app/src/main/java/com/github/andreyasadchy/xtra/ui/main/MainActivity.kt
++++ b/app/src/main/java/com/github/andreyasadchy/xtra/ui/main/MainActivity.kt
+@@ -23,9 +23,11 @@ import android.os.Bundle
+ import android.os.PowerManager
+ import android.os.ext.SdkExtensions
+ import android.text.format.Formatter
++import android.view.KeyEvent
+ import android.view.Menu
+ import android.view.View
+ import android.view.ViewGroup
++import android.widget.EditText
+ import android.widget.Toast
+ import androidx.activity.result.ActivityResultLauncher
+ import androidx.activity.result.contract.ActivityResultContracts
+@@ -658,6 +660,14 @@ class MainActivity : AppCompatActivity() {
+         )
+     }
+ 
++    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
++        // TV remote: let the player reveal/focus its controls (but never steal keys from a text field)
++        if (currentFocus !is EditText && (playerFragment as? PlayerFragment)?.onRemoteKey(event) == true) {
++            return true
++        }
++        return super.dispatchKeyEvent(event)
++    }
++
+     override fun onUserLeaveHint() {
+         super.onUserLeaveHint()
+         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
+diff --git a/app/src/main/java/com/github/andreyasadchy/xtra/ui/player/PlayerFragment.kt b/app/src/main/java/com/github/andreyasadchy/xtra/ui/player/PlayerFragment.kt
+index e4d5d39..e4ca9cf 100644
+--- a/app/src/main/java/com/github/andreyasadchy/xtra/ui/player/PlayerFragment.kt
++++ b/app/src/main/java/com/github/andreyasadchy/xtra/ui/player/PlayerFragment.kt
+@@ -12,6 +12,7 @@ import android.content.pm.ActivityInfo
+ import android.content.pm.PackageManager
+ import android.content.res.Configuration
+ import android.graphics.Color
++import android.graphics.drawable.ColorDrawable
+ import android.graphics.drawable.Icon
+ import android.os.Build
+ import android.os.Bundle
+@@ -21,6 +22,7 @@ import android.text.format.DateUtils
+ import android.util.TypedValue
+ import android.view.GestureDetector
+ import android.view.Gravity
++import android.view.KeyEvent
+ import android.view.LayoutInflater
+ import android.view.MotionEvent
+ import android.view.RoundedCorner
+@@ -120,6 +122,7 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
+     protected var useController = true
+     protected var controllerAutoHide = true
+     private var controllerHideOnTouch = true
++    private var focusControlsWhenShown = false
+     private val controllerHideAction = Runnable { if (view != null) hideController() }
+     private var controllerIsAnimating = false
+     private var controllerAnimation: ViewPropertyAnimator? = null
+@@ -582,6 +585,7 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
+                 true
+             }
+             with(playerControls) {
++                applyFocusHighlight(root)
+                 root.setOnTouchListener { _, event ->
+                     controllerTapDetector.onTouchEvent(event)
+                 }
+@@ -1714,6 +1718,62 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
+         }
+     }
+ 
++    // Remote / D-pad support (Android TV). Called by MainActivity for every key event.
++    // Returns true when the key was consumed.
++    fun onRemoteKey(event: KeyEvent): Boolean {
++        if (_binding == null || !isMaximized) return false
++        when (event.keyCode) {
++            KeyEvent.KEYCODE_DPAD_UP,
++            KeyEvent.KEYCODE_DPAD_DOWN,
++            KeyEvent.KEYCODE_DPAD_LEFT,
++            KeyEvent.KEYCODE_DPAD_RIGHT,
++            KeyEvent.KEYCODE_DPAD_CENTER,
++            KeyEvent.KEYCODE_ENTER,
++            KeyEvent.KEYCODE_NUMPAD_ENTER -> {
++                if (!binding.playerControls.root.isVisible) {
++                    // Controls are hidden: reveal them and put focus on them, swallow the key
++                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
++                        focusControlsWhenShown = true
++                        showController(force = true)
++                        updateProgress()
++                    }
++                    return true
++                } else if (event.action == KeyEvent.ACTION_DOWN) {
++                    // Controls are showing: keep them up while the user navigates
++                    showController(force = true)
++                }
++            }
++        }
++        return false
++    }
++
++    private fun focusControlsIfRequested() {
++        if (focusControlsWhenShown) {
++            focusControlsWhenShown = false
++            with(binding.playerControls) {
++                if (!playPause.requestFocus()) {
++                    root.requestFocus()
++                }
++            }
++        }
++    }
++
++    // The control buttons have transparent backgrounds, so a remote's focus would be invisible.
++    private fun applyFocusHighlight(parent: ViewGroup) {
++        for (i in 0 until parent.childCount) {
++            val child = parent.getChildAt(i)
++            if (child is ViewGroup) {
++                applyFocusHighlight(child)
++            }
++            if (child.isFocusable && child.isClickable) {
++                val background = child.background
++                if (background == null || (background is ColorDrawable && background.color == Color.TRANSPARENT)) {
++                    child.background = requireContext().getDrawable(R.drawable.player_control_focus)
++                }
++            }
++        }
++    }
++
+     protected fun showController(show: Boolean = true, force: Boolean = false) {
+         if (!controllerIsAnimating) {
+             if (!binding.playerControls.root.isVisible) {
+@@ -1728,6 +1788,7 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
+                                     controllerIsAnimating = true
+                                     if (view != null) {
+                                         binding.playerControls.root.visibility = View.VISIBLE
++                                        focusControlsIfRequested()
+                                     }
+                                 }
+ 
+@@ -1755,6 +1816,7 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
+                 binding.playerControls.root.removeCallbacks(controllerHideAction)
+                 binding.playerControls.root.alpha = 1f
+                 binding.playerControls.root.visibility = View.VISIBLE
++                focusControlsIfRequested()
+                 if (controllerAutoHide && controllerHideOnTouch && !binding.playerControls.progressBar.isPressed) {
+                     binding.playerControls.root.postDelayed(controllerHideAction, 3000)
+                 }
+diff --git a/app/src/main/res/drawable/player_control_focus.xml b/app/src/main/res/drawable/player_control_focus.xml
+new file mode 100644
+index 0000000..d5a18c7
+--- /dev/null
++++ b/app/src/main/res/drawable/player_control_focus.xml
+@@ -0,0 +1,17 @@
++<?xml version="1.0" encoding="utf-8"?>
++<selector xmlns:android="http://schemas.android.com/apk/res/android">
++    <item android:state_focused="true">
++        <shape android:shape="rectangle">
++            <solid android:color="#40FFFFFF" />
++            <stroke
++                android:width="2dp"
++                android:color="#FFFFFFFF" />
++            <corners android:radius="12dp" />
++        </shape>
++    </item>
++    <item>
++        <shape android:shape="rectangle">
++            <solid android:color="@android:color/transparent" />
++        </shape>
++    </item>
++</selector>
