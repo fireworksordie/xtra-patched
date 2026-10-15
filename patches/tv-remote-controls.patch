@@ -31,7 +31,7 @@ index b0a2f69..76085d2 100644
          super.onUserLeaveHint()
          if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
 diff --git a/app/src/main/java/com/github/andreyasadchy/xtra/ui/player/PlayerFragment.kt b/app/src/main/java/com/github/andreyasadchy/xtra/ui/player/PlayerFragment.kt
-index e4d5d39..a631f20 100644
+index e4d5d39..3bc50e5 100644
 --- a/app/src/main/java/com/github/andreyasadchy/xtra/ui/player/PlayerFragment.kt
 +++ b/app/src/main/java/com/github/andreyasadchy/xtra/ui/player/PlayerFragment.kt
 @@ -12,6 +12,7 @@ import android.content.pm.ActivityInfo
@@ -42,15 +42,18 @@ index e4d5d39..a631f20 100644
  import android.graphics.drawable.Icon
  import android.os.Build
  import android.os.Bundle
-@@ -21,6 +22,7 @@ import android.text.format.DateUtils
+@@ -19,8 +20,10 @@ import android.os.SystemClock
+ import android.text.format.DateFormat
+ import android.text.format.DateUtils
  import android.util.TypedValue
++import android.view.FocusFinder
  import android.view.GestureDetector
  import android.view.Gravity
 +import android.view.KeyEvent
  import android.view.LayoutInflater
  import android.view.MotionEvent
  import android.view.RoundedCorner
-@@ -120,6 +122,8 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
+@@ -120,6 +123,8 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
      protected var useController = true
      protected var controllerAutoHide = true
      private var controllerHideOnTouch = true
@@ -59,15 +62,7 @@ index e4d5d39..a631f20 100644
      private val controllerHideAction = Runnable { if (view != null) hideController() }
      private var controllerIsAnimating = false
      private var controllerAnimation: ViewPropertyAnimator? = null
-@@ -582,6 +586,7 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
-                 true
-             }
-             with(playerControls) {
-+                applyFocusHighlight(root)
-                 root.setOnTouchListener { _, event ->
-                     controllerTapDetector.onTouchEvent(event)
-                 }
-@@ -1714,6 +1719,108 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
+@@ -1714,6 +1719,126 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
          }
      }
  
@@ -107,20 +102,37 @@ index e4d5d39..a631f20 100644
 +            return false
 +        }
 +        val playerView = requireView()
-+        val next = if (direction != 0 && focused != null) focused.focusSearch(direction) else null
++        val controls = binding.playerControls.root
++        applyFocusHighlight(controls)
 +        val consume: Boolean
-+        if (binding.playerControls.root.isVisible) {
++        if (controls.isVisible) {
 +            showController(force = true)
 +            if (focused == null || !isInside(focused, playerView)) {
 +                // nothing focused yet, or focus is somewhere behind the player: bring it onto the controls
 +                focusControlsWhenShown = true
 +                focusControlsIfRequested()
 +                consume = true
++            } else if (direction == 0) {
++                consume = false
 +            } else {
-+                // never let focus escape to the hidden screen behind the player
-+                consume = next != null && !isInside(next, playerView)
++                // Move focus ourselves while it is among the controls: the default search also
++                // considers the invisible screen behind the player and can pick views there.
++                val target = if (isInside(focused, controls)) {
++                    FocusFinder.getInstance().findNextFocus(controls, focused, direction)
++                } else {
++                    null
++                }
++                if (target != null) {
++                    target.requestFocus(direction)
++                    consume = true
++                } else {
++                    // end of the controls in that direction: the chat may take it, the hidden screen may not
++                    val next = focused.focusSearch(direction)
++                    consume = next != null && !isInside(next, playerView)
++                }
 +            }
 +        } else {
++            val next = if (direction != 0 && focused != null) focused.focusSearch(direction) else null
 +            val chat = binding.chatLayout
 +            val movesInsideChat = focused != null && isInside(focused, chat) && next != null && isInside(next, chat)
 +            consume = confirmKey || !movesInsideChat
@@ -158,13 +170,14 @@ index e4d5d39..a631f20 100644
 +    }
 +
 +    // The control buttons have transparent backgrounds, so a remote's focus would be invisible.
++    // Many of them are only enabled/clickable after setup, so this runs each time a key is pressed.
 +    private fun applyFocusHighlight(parent: ViewGroup) {
 +        for (i in 0 until parent.childCount) {
 +            val child = parent.getChildAt(i)
 +            if (child is ViewGroup) {
 +                applyFocusHighlight(child)
 +            }
-+            if (child.isFocusable && child.isClickable) {
++            if (child.isFocusable && child !is TimeBar) {
 +                val background = child.background
 +                if (background == null || (background is ColorDrawable && background.color == Color.TRANSPARENT)) {
 +                    child.background = requireContext().getDrawable(R.drawable.player_control_focus)
@@ -176,7 +189,7 @@ index e4d5d39..a631f20 100644
      protected fun showController(show: Boolean = true, force: Boolean = false) {
          if (!controllerIsAnimating) {
              if (!binding.playerControls.root.isVisible) {
-@@ -1728,6 +1835,7 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
+@@ -1728,6 +1853,7 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
                                      controllerIsAnimating = true
                                      if (view != null) {
                                          binding.playerControls.root.visibility = View.VISIBLE
@@ -184,7 +197,7 @@ index e4d5d39..a631f20 100644
                                      }
                                  }
  
-@@ -1755,6 +1863,7 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
+@@ -1755,6 +1881,7 @@ abstract class PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment
                  binding.playerControls.root.removeCallbacks(controllerHideAction)
                  binding.playerControls.root.alpha = 1f
                  binding.playerControls.root.visibility = View.VISIBLE
